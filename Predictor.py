@@ -20,4 +20,4 @@ class Predictor(nn.Module):
         h = self.dropout(h)
         logits = self.fc2(h)
 
-        return F.softmax(logits, dim=-1) # 다중 분류용이라 이진 분류 해야하면 다시 만들어야함
+        return logits
