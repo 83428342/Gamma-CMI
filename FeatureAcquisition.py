@@ -1,8 +1,6 @@
 import numpy as np
 import torch
-
-import Generators
-import Predictor
+import torch.nn.functional as F
 
 class FeatureAcquisition():
     def __init__(self, x, m, generative_model, num_samples, predictor, alpha=1, gamma=0):
@@ -60,7 +58,8 @@ class FeatureAcquisition():
         m_repeated = torch.tensor(m_repeated, dtype=torch.float32, device=device)
 
         with torch.no_grad():
-            p_now = predictor(x_sampled, m_repeated).cpu().numpy()
+            logits = predictor(x_sampled, m_repeated)
+            p_now = torch.softmax(logits, dim=-1).cpu().numpy()
         h_now = self.entropy(p=p_now)
 
         out = []
@@ -70,7 +69,8 @@ class FeatureAcquisition():
             m_copy[:, f] = 1.0
 
             with torch.no_grad():
-                p_with = predictor(x_sampled, m_copy).cpu().numpy()
+                logits = predictor(x_sampled, m_copy)
+                p_with = torch.softmax(logits, dim=-1).cpu().numpy()
             h_with = self.entropy(p=p_with)
 
             entropy_diff = h_now - h_with

@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -189,8 +191,21 @@ class PartialVAE(nn.Module):
             z = z.reshape(SB, D)
             h = self.z_to_h(z) # n개 sampling 후 z -> h
             x_hat = self.h_to_x(h).view(n_samples, x.size(0), -1) # h -> x복원
-        return x_hat, (mu, sig)
+        return x_hat , (mu, sig)
 
+    @torch.no_grad()
+    def generate(self, x: np.ndarray, m: np.ndarray, stochastic=False, obs_sigma=1.0):
+        self.eval()
+
+        device = next(self.parameters()).device
+        xt = torch.tensor(x, dtype=torch.float32, device=device)
+        mt = torch.tensor(m, dtype=torch.float32, device=device)
+
+        x_hat, (mu, sig) = self.forward(xt, mt, n_samples=1)
+
+        x_fill = mt * xt + (1 - mt) * x_hat
+
+        return x_fill.detach().cpu().numpy()
 
     # loss 관련 메서드
     def reconstruction_nll(self, x, m, x_hat, obs_sigma=1.0):
