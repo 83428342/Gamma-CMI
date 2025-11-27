@@ -194,7 +194,7 @@ class PartialVAE(nn.Module):
         return x_hat , (mu, sig)
 
     @torch.no_grad()
-    def generate(self, x: np.ndarray, m: np.ndarray, stochastic=False, obs_sigma=1.0):
+    def generate(self, x, m, stochastic=False, obs_sigma=1.0):
         self.eval()
 
         device = next(self.parameters()).device
