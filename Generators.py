@@ -15,3 +15,4 @@ class GaussianSampler:
         )
 
         return m * x + (1 - m) * gaussian_samples
+    

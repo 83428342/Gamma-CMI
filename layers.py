@@ -3,11 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class Predictor(nn.Module): # 기본 MLP 모듈
+class MLP(nn.Module): # 기본 MLP 모듈
     def __init__(self, in_dim, hidden_dim, out_dim, num_hidden):
         super().__init__()
-        in_dim = in_dim * 2
-
         if num_hidden == 0:
             self.network = nn.Linear(in_dim, out_dim)
         else:
@@ -26,6 +24,18 @@ class Predictor(nn.Module): # 기본 MLP 모듈
 
             self.network = nn.Sequential(*self.network) # 블럭 조립
     
-    def forward(self, x, m):
-        h = torch.cat([x * m, m], dim=-1)
-        return self.network(h)
+    def forward(self, x):
+        return self.network(x)
+
+
+class StochasticMLP(nn.Module): # mu, sig 출력
+    def __init__(self, in_dim, hidden_dim, out_dim, num_hidden):
+        super().__init__()
+        self.network = MLP(in_dim, hidden_dim, 2*out_dim, num_hidden)
+        self.out_dim = out_dim
+
+    def forward(self, x):
+        x = self.network(x)
+        mu = x[:, :self.out_dim]
+        sigma = F.softplus(x[:, self.out_dim:]) + 1e-10
+        return mu, sigma

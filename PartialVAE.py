@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from layers import MLP, StochasticMLP
+
 '''
 전체 구조
 - x -> c로 보냄(각 feature를 embedding, unobserved는 0으로)
@@ -20,6 +22,7 @@ def kl_01_loss(mu, sig):
     kl = 0.5 * (mu.pow(2) + sig.pow(2) - (sig.log() * 2) - 1.0)
     return kl.sum(dim=1).mean()
 
+
 def nll_continuous(x_true, x_pred_mean, mask, obs_sigma=1.0):
     # mask==1인 위치만 집계
     var = obs_sigma ** 2
@@ -28,6 +31,7 @@ def nll_continuous(x_true, x_pred_mean, mask, obs_sigma=1.0):
     # 관측치만 평균
     denom = mask.sum().clamp_min(1.0)
     return (nll * mask).sum() / denom
+
 
 def nll_categorical(x_true_idx, logits, mask):
     B, Fcat = x_true_idx.shape
@@ -42,24 +46,38 @@ def nll_categorical(x_true_idx, logits, mask):
     denom = mask.sum().clamp_min(1.0)
     return (ce * mask).sum() / denom
 
+
 # 연속형 변수의 임베딩 클래스
 class ContinuousXtoC(nn.Module):
-    def __init__(self, num_con_features, hidden_dim, c_dim): # 연속형 변수의 개수, MLP 중간층 뉴런 개수, 최종 임베딩 차원
+    def __init__(self, num_con_features, hidden_dim, c_dim, num_hidden): # 연속형 변수의 개수, MLP 중간층 뉴런 개수, 최종 임베딩 차원
         super().__init__()
+        self.num_con_features = num_con_features
+        self.c_dim = c_dim
         self.E = nn.Parameter(torch.randn(1, num_con_features, c_dim)) # 각 feature마다 다르게 임베딩해서 표현
-        self.fc1 = nn.Linear(c_dim+1, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, c_dim)
+
+        self.x_to_c = MLP( 
+        in_dim=c_dim+1, # x와 x의 임베딩 동시에 넣어주기 위함
+        hidden_dim=hidden_dim,
+        out_dim=c_dim,
+        num_hidden=num_hidden
+        )
 
     def forward(self, x, m):
-        x = x.unsqueeze(-1)
-        x_embedded = x * self.E # 각 feature를 임베딩한 행렬
-        s = torch.cat([x, x_embedded], dim=-1) # 원래 x와 concat해서 표현
+        B, D = x.shape
+        
+        x_exp = x.unsqueeze(-1)
+        x_embedded = x_exp * self.E
+        x_cat = torch.cat([x_exp, x_embedded], dim=-1)
 
-        h = F.relu(self.fc1(s)) # 행별로 MLP 연산
-        u = self.fc2(h) 
+        x_flat = x_cat.view(B * D, self.c_dim + 1)
+        x_c_flat = self.x_to_c(x_flat)
 
-        c = (u * m.unsqueeze(-1)).sum(dim=1) # mask가 1인 모든 c를 병합
-        return c 
+        x_c = x_c_flat.view(B, D, self.c_dim)
+        m_exp = m.unsqueeze(-1).float()
+
+        c = (x_c * m_exp).sum(dim=1)
+        return c
+    
 
 # 범주형 변수의 임베딩 클래스
 class CategoricalXtoC(nn.Module):
@@ -75,55 +93,65 @@ class CategoricalXtoC(nn.Module):
 
         c = torch.sum(x*m.unsqueeze(-1), dim=1)
         return c        
+    
 
 # c를 입력으로 받아 gaussian을 출력하는 클래스
 class CtoZ(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim):
+    def __init__(self, in_dim, hidden_dim, out_dim, num_hidden):
         super().__init__()
-        self.fc1 = nn.Linear(in_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 2*out_dim)
+        self.network = StochasticMLP(
+            in_dim=in_dim,
+            hidden_dim=hidden_dim,
+            out_dim=out_dim,
+            num_hidden=num_hidden
+        )
         self.out_dim = out_dim
 
     def forward(self, c):
-        c = F.relu(self.fc1(c))
-        c = self.fc2(c)
-
-        mu = c[:, :self.out_dim]
-        sig = c[:, self.out_dim:]
-
-        sig = F.softplus(sig)
-        sig = sig + 1e-4
-
+        mu, sig = self.network(c)  
         return mu, sig
+    
 
-class ZtoH(nn.Module):
-    def __init__(self, latent_dim, hidden_dim):
+class ZtoH(nn.Module): # 샘플링 후의 z
+    def __init__(self, in_dim, hidden_dim, out_dim, num_hidden):
         super().__init__()
-        self.fc1 = nn.Linear(latent_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.bn  = nn.BatchNorm1d(hidden_dim)
+        self.network = MLP(
+            in_dim=in_dim,
+            hidden_dim=hidden_dim,
+            out_dim=out_dim,
+            num_hidden=num_hidden
+        )
+        self.relu = nn.ReLU()
+        self.bn = nn.BatchNorm1d(out_dim)
 
     def forward(self, z):
-        h = F.relu(self.fc1(z))
-        h = F.relu(self.fc2(h))
+        h = self.network(z)
+        h = self.relu(h)
         h = self.bn(h)
         return h
     
+
 # 주의사항: ContinuousXtoC와 CtoZ의 레이어 개수는 동일해야 함 (원래 논문의 구조 유지)
 class PartialVAE(nn.Module):
     '''
     x -> c -> z -> h -> x
     '''
-    def __init__(self,
-                 input_type, # input의 type
-                 num_con_features, # con_X의 개수
-                 num_cat_features, # cat_X의 개수
-                 hidden_dim_con, # con_x_to_c의 MLP layer의 hidden layer의 뉴런 개수 
-                 most_categories, # 가장 많은 범주를 가지고 있는 feature의 범주의 수
-                 c_dim, # c의 dimension
-                 hid_enc, # CtoZ의 hidden dim
-                 hid_dec, # ZtoH의 hidden dim
-                 latent_dim): # z의 dimension
+    def __init__(
+            self,
+            input_type, # input의 type
+            num_con_features, # con_X의 개수
+            num_cat_features, # cat_X의 개수
+            hidden_dim_con, # con_x_to_c의 MLP layer의 hidden layer의 뉴런 개수 
+            most_categories, # 가장 많은 범주를 가지고 있는 feature의 범주의 수
+            c_dim, # c의 dimension
+            hid_enc, # CtoZ의 hidden dim
+            hid_dec, # ZtoH의 hidden dim
+            latent_dim, # z의 dimension
+            num_hidden_emb, # continuous xtoc의 중간층 개수
+            num_hidden_enc, # ctoz의 중간층 개수
+            num_hidden_dec # ztoh의 중간층 개수
+                 
+        ): 
         super().__init__()
         self.input_type = input_type # mixed, continuous, categorical
         self.num_con_features = num_con_features
@@ -138,7 +166,8 @@ class PartialVAE(nn.Module):
             self.con_x_to_c = ContinuousXtoC(
                 num_con_features=num_con_features,
                 hidden_dim=hidden_dim_con,
-                c_dim=c_dim
+                c_dim=c_dim,
+                num_hidden=num_hidden_emb
             )
 
         if self.input_type in ("mixed", "categorical"):
@@ -148,9 +177,26 @@ class PartialVAE(nn.Module):
                 c_dim=c_dim
             )
 
-        self.c_to_z = CtoZ(in_dim=c_dim, hidden_dim=hid_enc, out_dim=latent_dim)
-        self.z_to_h = ZtoH(latent_dim=latent_dim, hidden_dim=hid_dec)
-        self.h_to_x = nn.Linear(hid_dec, num_con_features + num_cat_features * most_categories)
+        # c -> z
+        self.c_to_z = CtoZ(
+            in_dim=c_dim,
+            hidden_dim=hid_enc,
+            out_dim=latent_dim,
+            num_hidden=num_hidden_enc
+        )
+
+        # z -> h
+        self.z_to_h = ZtoH(
+            in_dim=latent_dim,
+            hidden_dim=hid_dec,
+            out_dim=hid_dec,
+            num_hidden=num_hidden_dec
+        )
+
+        # h -> x
+        out_dim_x = num_con_features + num_cat_features * most_categories
+        self.h_to_x = nn.Linear(hid_dec, out_dim_x)
+
         
     def x_to_c(self, x, m):
         if self.input_type == "continuous":
