@@ -5,9 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
+from layers import MLP, StochasticMLP
+
+
 # 기본 RealNVP 블럭 
 class RealNVPLayer(nn.Module):
-    def __init__(self, num_features, num_conditioning_features, hidden_dim):
+    def __init__(self, num_features, num_conditioning_features, hidden_dim, num_hidden):
         super().__init__()
         self.za_dim = int(num_features / 2)
         self.zb_dim = num_features - self.za_dim
@@ -15,22 +18,24 @@ class RealNVPLayer(nn.Module):
 
         # scale network
         self.scale_network = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.za_dim),
-            nn.Tanh()
+            MLP(
+                in_dim=in_dim,
+                hidden_dim=hidden_dim,
+                out_dim=self.za_dim,
+                num_hidden=num_hidden,
+            ),
+        nn.Tanh(),
         )
 
         # shift network
         self.shift_network = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.za_dim),
-            nn.Tanh()
+            MLP(
+                in_dim=in_dim,
+                hidden_dim=hidden_dim,
+                out_dim=self.za_dim,
+                num_hidden=num_hidden,
+            ),
+        nn.Tanh(),
         )
 
         perm = torch.randperm(num_features)
@@ -64,9 +69,10 @@ class RealNVPLayer(nn.Module):
         log_det = torch.sum(-s, dim=-1)
         return z, log_det
 
+
 # 전체 RealNVP 구조
 class FlowNetwork(nn.Module):
-    def __init__(self, num_features, num_conditioning_features, hidden_dim, num_flow_layers):
+    def __init__(self, num_features, num_conditioning_features, hidden_dim, num_flow_layers, num_hidden):
         super().__init__()
         self.num_features = num_features
         self.num_conditioning_features = num_conditioning_features
@@ -76,6 +82,7 @@ class FlowNetwork(nn.Module):
                 num_features=num_features,
                 num_conditioning_features=num_conditioning_features,
                 hidden_dim=hidden_dim,
+                num_hidden=num_hidden
             )
             for _ in range(num_flow_layers)
         ])
@@ -95,30 +102,23 @@ class FlowNetwork(nn.Module):
             log_det_total = log_det_total + log_det
         return z, log_det_total
 
+
 # latent sampling
 class PriorNetwork(nn.Module):
-    def __init__(self,num_features, num_conditioning_features, hidden_dim, min_sig=1e-4):
+    def __init__(self,num_features, num_conditioning_features, hidden_dim, num_hidden):
         super().__init__()
         self.out_dim = num_features
-        self.min_sig = min_sig
 
-        in_dim = num_conditioning_features
-        out_dim = 2 * num_features
-
-        self.network = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, out_dim),
+        self.prior_network = StochasticMLP(
+            in_dim=num_conditioning_features,
+            hidden_dim=hidden_dim,
+            out_dim=num_features,
+            num_hidden=num_hidden,
         )
 
     def get_prior(self, conditioning):
-        x = self.network(conditioning)
-        mean = x[:, :self.out_dim]
-        raw_sigma = x[:, self.out_dim:]
-        std = F.softplus(raw_sigma) + self.min_sig
-        return Normal(loc=mean, scale=std)
+        mean, sig = self.prior_network(conditioning)
+        return Normal(loc=mean, scale=sig)
     
     def log_likelihood(self, z, conditioning):
         prior = self.get_prior(conditioning)
@@ -132,8 +132,9 @@ class PriorNetwork(nn.Module):
         samples = samples.reshape(-1, self.out_dim)
         return samples
     
+
 class Flow(nn.Module):
-    def __init__(self, num_features, hidden_dim_flow, hidden_dim_prior, num_flow_layers):
+    def __init__(self, num_features, hidden_dim_flow, hidden_dim_prior, num_flow_layers, num_hidden):
         super().__init__()
         self.num_features = num_features
 
@@ -145,12 +146,14 @@ class Flow(nn.Module):
             num_conditioning_features=num_conditioning_features,
             hidden_dim=hidden_dim_flow,
             num_flow_layers=num_flow_layers,
+            num_hidden=num_hidden
         )
 
         self.prior = PriorNetwork(
             num_features=num_features,
             num_conditioning_features=num_conditioning_features,
             hidden_dim=hidden_dim_prior,
+            num_hidden=num_hidden
         )
 
     def get_xu_conditioning(self, x, m):
