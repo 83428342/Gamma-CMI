@@ -280,4 +280,3 @@ class PartialVAE(nn.Module):
         nll_x = self.reconstruction_nll(x, m, x_hat, obs_sigma=obs_sigma)
         kl = kl_01_loss(mu, sig)
         return nll_x + kl, {"KL": kl.detach(), "NLL_X": nll_x.detach()}
-    
