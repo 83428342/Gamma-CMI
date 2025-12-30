@@ -6,6 +6,7 @@ import torch.nn.functional as F
 class MLP(nn.Module): # 기본 MLP 모듈
     def __init__(self, in_dim, hidden_dim, out_dim, num_hidden):
         super().__init__()
+        
         if num_hidden == 0:
             self.network = nn.Linear(in_dim, out_dim)
         else:

@@ -57,14 +57,10 @@ class FeatureAcquisition():
         x_sampled = torch.tensor(x_sampled, dtype=torch.float32, device=device) # tensor로 변경
         m_repeated = torch.tensor(m_repeated, dtype=torch.float32, device=device)
 
-        with torch.no_grad():
-            logits = predictor(x_sampled, m_repeated)
-            p_now = torch.softmax(logits, dim=-1).cpu().numpy()
-        h_now = self.entropy(p=p_now)
-
         out = []
 
         for f in range(x.shape[-1]):
+            # with
             m_copy = m_repeated.clone() # numpy의 copy method
             m_copy[:, f] = 1.0
 
@@ -73,7 +69,17 @@ class FeatureAcquisition():
                 p_with = torch.softmax(logits, dim=-1).cpu().numpy()
             h_with = self.entropy(p=p_with)
 
-            entropy_diff = h_now - h_with
+            # without
+            m_copy = m_repeated.clone() # numpy의 copy method
+            m_copy[:, f] = 0.0
+
+            with torch.no_grad():
+                logits = predictor(x_sampled, m_copy)
+                p_without = torch.softmax(logits, dim=-1).cpu().numpy()
+            h_without = self.entropy(p=p_without)
+
+            # 차이
+            entropy_diff = h_without - h_with
             entropy_diff = entropy_diff.reshape(-1, num_samples).mean(-1)
             out.append(entropy_diff)
         return np.stack(out, axis=-1)
