@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import TensorDataset, DataLoader
 
 from layers import MLP
 
@@ -14,6 +13,7 @@ class JointEncoder(nn.Module):
         num_features,
         z_dim, # 각 feature의 출력층 dim
         enc_hidden_dim, # hidden layer의 dim
+        num_heads # attention head의 개수
     ):
         super().__init__()
         self.num_features = num_features
@@ -22,9 +22,17 @@ class JointEncoder(nn.Module):
 
         self.attention = nn.MultiheadAttention(
             embed_dim=enc_hidden_dim,
-            num_heads=1,
+            num_heads=num_heads,
             batch_first=True
         )
+        self.ln1 = nn.LayerNorm(enc_hidden_dim)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(enc_hidden_dim, enc_hidden_dim * 4),
+            nn.GELU(),
+            nn.Linear(enc_hidden_dim * 4, enc_hidden_dim),
+        )
+        self.ln2 = nn.LayerNorm(enc_hidden_dim)
 
         self.out_proj = nn.Linear(enc_hidden_dim, z_dim)
 
@@ -38,8 +46,11 @@ class JointEncoder(nn.Module):
             token, # key
             token  # value
         )
-
-        z_raw = self.out_proj(attn_out)
+        
+        h1 = self.ln1(token + attn_out)
+        ffn_out = self.ffn(h1)
+        h2 = self.ln2(h1 + ffn_out)
+        z_raw = self.out_proj(h2)
         return z_raw
     
 class TeacherModel(nn.Module):
@@ -48,6 +59,7 @@ class TeacherModel(nn.Module):
         num_features,
         z_dim,
         enc_hidden_dim,
+        num_heads, # attention head의 개수
         dec_hidden_dim, # 디코더 hidden layer의 dim
         dec_num_hidden, # 디코더 hidden layer 개수
         out_dim # 클래수 개수 (regression에서는 1)
@@ -59,6 +71,7 @@ class TeacherModel(nn.Module):
             num_features=num_features,
             z_dim=z_dim,
             enc_hidden_dim=enc_hidden_dim,
+            num_heads=num_heads
         )
 
         self.predictor = MLP(
@@ -123,6 +136,7 @@ class StudentModel(nn.Module):
         num_features,
         z_dim,
         enc_hidden_dim,
+        num_heads, # attention head의 개수
         dec_hidden_dim, # 디코더 hidden layer의 dim
         dec_num_hidden, # 디코더 hidden layer 개수
         out_dim # 클래수 개수 (regression에서는 1)
@@ -134,6 +148,7 @@ class StudentModel(nn.Module):
             num_features=num_features,
             z_dim=z_dim,
             enc_hidden_dim=enc_hidden_dim,
+            num_heads=num_heads, # attention head의 개수
         )
 
         self.predictor = MLP(
@@ -219,6 +234,7 @@ class StudentLoss(nn.Module):
             "logit_student": logit_student,
         }
 
+
 class JointFeatureAcquisition():
     def __init__(self, x, m, predictor, alpha=1, gamma=0):
         self.x = x
@@ -257,7 +273,8 @@ class JointFeatureAcquisition():
         m_repeated = torch.tensor(m_repeated, dtype=torch.float32, device=device)
 
         with torch.no_grad():
-            z_base = predictor.encoder(x, m_repeated) # 기본 z 얻어놓기
+            m = torch.tensor(m, dtype=torch.float32, device=device)
+            z_base = predictor.encoder(x, m) # 기본 z 얻어놓기
         B, D, Z = z_base.shape
 
         out = []
