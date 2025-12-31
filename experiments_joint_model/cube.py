@@ -79,7 +79,7 @@ student_loss_fn = StudentLoss(
     student_model=student,
     teacher_model=teacher,
     task_type="classification",
-    lambda_distill=1.0,
+    lambda_distill=0.0,
     lambda_pred=1.0,
 )
 
@@ -95,53 +95,53 @@ scheduler_teacher = StepLR(optimizer_teacher, step_size=10, gamma=0.1)
 best_val_acc = 0.0
 best_teacher_state = copy.deepcopy(teacher.state_dict())
 
-for epoch in range(1, num_epochs_teacher + 1):
-    teacher.train()
-    total_loss = 0.0
-    total_batches = 0
+# for epoch in range(1, num_epochs_teacher + 1):
+#     teacher.train()
+#     total_loss = 0.0
+#     total_batches = 0
 
-    for x, y in train_loader:
-        x = x.to(device)
-        y = y.to(device)
+#     for x, y in train_loader:
+#         x = x.to(device)
+#         y = y.to(device)
 
-        # teacher는 full mask로 학습 (모든 feature 사용)
-        m_full = torch.ones_like(x, device=device)
+#         # teacher는 full mask로 학습 (모든 feature 사용)
+#         m_full = torch.ones_like(x, device=device)
 
-        out = teacher_loss_fn(x, m_full, y)
-        loss = out["loss"]
+#         out = teacher_loss_fn(x, m_full, y)
+#         loss = out["loss"]
 
-        optimizer_teacher.zero_grad()
-        loss.backward()
-        optimizer_teacher.step()
+#         optimizer_teacher.zero_grad()
+#         loss.backward()
+#         optimizer_teacher.step()
 
-        total_loss += loss.item()
-        total_batches += 1
+#         total_loss += loss.item()
+#         total_batches += 1
 
-    avg_loss = total_loss / max(total_batches, 1)
+#     avg_loss = total_loss / max(total_batches, 1)
 
-    # validation accuracy 계산
-    val_acc = evaluate_classifier(teacher, val_loader, device)
+#     # validation accuracy 계산
+#     val_acc = evaluate_classifier(teacher, val_loader, device)
 
-    # 스케줄러 스텝 (epoch 단위)
-    scheduler_teacher.step()
+#     # 스케줄러 스텝 (epoch 단위)
+#     scheduler_teacher.step()
 
-    # best val 기준으로 state 저장
-    if val_acc > best_val_acc:
-        best_val_acc = val_acc
-        best_teacher_state = copy.deepcopy(teacher.state_dict())
+#     # best val 기준으로 state 저장
+#     if val_acc > best_val_acc:
+#         best_val_acc = val_acc
+#         best_teacher_state = copy.deepcopy(teacher.state_dict())
 
-    print(
-        f"[Teacher] Epoch {epoch:02d} | loss={avg_loss:.4f} | "
-        f"val_acc={val_acc:.4f} | best_val_acc={best_val_acc:.4f}"
-    )
+#     print(
+#         f"[Teacher] Epoch {epoch:02d} | loss={avg_loss:.4f} | "
+#         f"val_acc={val_acc:.4f} | best_val_acc={best_val_acc:.4f}"
+#     )
 
-# 학습 후 best validation 모델 로드
-teacher.load_state_dict(best_teacher_state)
+# # 학습 후 best validation 모델 로드
+# teacher.load_state_dict(best_teacher_state)
 
-# teacher는 학습 끝났으니 grad 갱신 안 하도록 freeze (선택)
-for p in teacher.parameters():
-    p.requires_grad = False
-teacher.eval()
+# # teacher는 학습 끝났으니 grad 갱신 안 하도록 freeze (선택)
+# for p in teacher.parameters():
+#     p.requires_grad = False
+# teacher.eval()
 
 num_epochs_student = 100
 lr_student = 1e-3
@@ -212,12 +212,23 @@ for epoch in range(1, num_epochs_student + 1):
         for x_val_batch, y_val_batch in val_loader:
             x_val_batch = x_val_batch.to(device)
             y_val_batch = y_val_batch.to(device)
+            B, D = x_val_batch.shape
 
-            m_full_val = torch.ones_like(x_val_batch, device=device)
-            logits_val = student(x_val_batch, m_full_val)
+            m_np_val = sample_mask_uniform_K_per_sample(
+                bs=B, d=D,
+                min_K=min_K,
+                max_K=max_K,
+            )  # (B, D) numpy
+            m_val = torch.tensor(m_np_val, dtype=torch.float32, device=device)
+
+            x_val_masked = x_val_batch * m_val
+
+            logits_val = student(x_val_masked, m_val)
             preds_val = logits_val.argmax(dim=-1)
+
             correct += (preds_val == y_val_batch).sum().item()
             total += y_val_batch.size(0)
+
     val_acc_student = correct / total if total > 0 else 0.0
 
     # 스케줄러 스텝
@@ -231,7 +242,7 @@ for epoch in range(1, num_epochs_student + 1):
     print(
         f"[Student] Epoch {epoch:02d} | loss={avg_loss:.4f} "
         f"(distill={avg_distill:.4f}, sup={avg_sup:.4f}) | "
-        f"val_acc(full mask)={val_acc_student:.4f} | "
+        f"val_acc(rand mask)={val_acc_student:.4f} | "
         f"best_val_acc={best_val_acc_student:.4f}"
     )
 
