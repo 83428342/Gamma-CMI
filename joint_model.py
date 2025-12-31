@@ -100,11 +100,8 @@ class TeacherLoss(nn.Module):
         self.teacher = teacher_model
         self.task_type = task_type
 
-        if task_type == "multi_classification":
+        if task_type == "classification":
             self.criterion = nn.CrossEntropyLoss()
-
-        elif task_type == "binary_classification":
-            self.criterion = nn.BCEWithLogitsLoss()
 
         elif task_type == "regression":
             self.criterion = nn.MSELoss()
@@ -112,12 +109,7 @@ class TeacherLoss(nn.Module):
     def forward(self, x, m, y):
         logit = self.teacher(x, m)
 
-        if self.task_type == "multi_classification":
-            loss = self.criterion(logit, y)
-
-        elif self.task_type == "binary_classification":
-            logit = logit.view(-1)
-            y = y.view(-1).float()
+        if self.task_type == "classification":
             loss = self.criterion(logit, y)
 
         elif self.task_type == "regression":
@@ -185,11 +177,8 @@ class StudentLoss(nn.Module):
         self.lambda_pred = lambda_pred
         self.mse = nn.MSELoss()
 
-        if task_type == "multi_classification":
+        if task_type == "classification":
             self.criterion = nn.CrossEntropyLoss()
-
-        elif task_type == "binary_classification":
-            self.criterion = nn.BCEWithLogitsLoss()
 
         elif task_type == "regression":
             self.criterion = nn.MSELoss()
@@ -211,13 +200,8 @@ class StudentLoss(nn.Module):
         loss_distill = self.mse(z_student, z_teacher)
 
         # prediction loss
-        if self.task_type == "multi_classification":
+        if self.task_type == "classification":
             loss_sup = self.criterion(logit_student, y)
-
-        elif self.task_type == "binary_classification":
-            logit_flat = logit_student.view(-1)
-            y_flat = y.view(-1).float()
-            loss_sup = self.criterion(logit_flat, y_flat)
 
         elif self.task_type == "regression":
             logit_flat = logit_student.view(-1)

@@ -20,17 +20,17 @@ from joint_model import (
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "1" # blackwell
 
-X_train = torch.load(f"./data/cube/X_train_cdf.pt").float()
-y_train = torch.load(f"./data/cube/y_train.pt").long()
+X_train = torch.load(f"./data/california_housing/X_train_cdf.pt").float()
+y_train = torch.load(f"./data/california_housing/y_train.pt").long()
 
-X_val   = torch.load(f"./data/cube/X_val_cdf.pt").float()
-y_val   = torch.load(f"./data/cube/y_val.pt").long()
+X_val   = torch.load(f"./data/california_housing/X_val_cdf.pt").float()
+y_val   = torch.load(f"./data/california_housing/y_val.pt").long()
 
-X_test = torch.load(f"./data/cube/X_test_cdf.pt").float()
-y_test = torch.load(f"./data/cube/y_test.pt").long()
+X_test = torch.load(f"./data/california_housing/X_test_cdf.pt").float()
+y_test = torch.load(f"./data/california_housing/y_test.pt").long()
 
-num_features = 20
-num_classes = 8
+num_features = 8
+num_classes = 4
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -44,11 +44,11 @@ train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
 val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
 test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False)
 
-z_dim          = 8   # per-feature latent dim
-enc_hidden_dim = 16   # JointEncoder 내부 attention token dim
-dec_hidden_dim = 64  # predictor MLP hidden dim
+z_dim          = 16   # per-feature latent dim
+enc_hidden_dim = 64   # JointEncoder 내부 attention token dim
+dec_hidden_dim = 256  # predictor MLP hidden dim
 dec_num_hidden = 2    # predictor MLP hidden layer 개수
-num_heads      = 16 # attention head의 개수
+num_heads      = 8 # attention head의 개수
 
 teacher = TeacherModel(
     num_features=num_features,
@@ -263,8 +263,8 @@ print(f"Student (full mask)  test_acc = {student_test_acc:.4f}")
 save_dir = "./checkpoints"
 os.makedirs(save_dir, exist_ok=True)
 
-torch.save(best_teacher_state, os.path.join(save_dir, "teacher_cube.pt"))
-torch.save(best_student_state, os.path.join(save_dir, "student_cube.pt"))
+torch.save(best_teacher_state, os.path.join(save_dir, "teacher_california_housing.pt"))
+torch.save(best_student_state, os.path.join(save_dir, "student_california_housing.pt"))
 
 print("모델 가중치 저장 완료")
 
