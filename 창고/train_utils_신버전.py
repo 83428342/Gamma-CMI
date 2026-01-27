@@ -1,6 +1,5 @@
 import sys, os
 import numpy as np
-import random
 
 import torch
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -8,23 +7,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-from src.쪼인트 import JointFeatureAcquisition
-
-
-def set_seed(num=42):
-    random.seed(num)
-    os.environ["PYTHONHASHSEED"] = str(num)
-
-    np.random.seed(num)
-    torch.manual_seed(num)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(num)
-        torch.cuda.manual_seed_all(num)
-
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
+from joint_model_신버전 import JointFeatureAcquisition
 
 def sample_mask_uniform_K_per_sample(bs, d, min_K, max_K): # batch size, feature 개수, 최소 관측 샘플 수, 최대 관측 샘플 수
     m = np.zeros((bs, d), dtype=np.float32)
@@ -53,8 +36,7 @@ def evaluate_classifier(model, data_loader, device):
     return acc
 
 def run_feature_acquisition(
-    acquisition_model,
-    prediction_model,
+    model,
     X_test,
     y_test,
     alpha=1.0,
@@ -62,8 +44,7 @@ def run_feature_acquisition(
     metric='acc'
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    acquisition_model.eval()
-    prediction_model.eval()
+    model.eval()
 
     x = X_test.to(device)
 
@@ -79,7 +60,7 @@ def run_feature_acquisition(
         FA = JointFeatureAcquisition(
             x=x,
             m=m,
-            predictor=acquisition_model,
+            model=model,
             alpha=alpha,
             gamma=gamma,
         )
@@ -89,7 +70,7 @@ def run_feature_acquisition(
         with torch.no_grad():
             xv = x
             mv = torch.tensor(m, dtype=torch.float32, device=device)
-            logits = prediction_model(xv, mv)
+            logits = model(xv, mv)
 
             if metric == "acc":
                 # accuracy

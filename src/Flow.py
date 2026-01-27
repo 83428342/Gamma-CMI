@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-from layers import MLP, StochasticMLP
+from src.layers import MLP, StochasticMLP
 
 
 # 기본 RealNVP 블럭 

@@ -44,7 +44,7 @@ train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
 val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
 test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False)
 
-z_dim          = 8   # per-feature latent dim
+z_dim          = 16   # per-feature latent dim
 enc_hidden_dim = 16   # JointEncoder 내부 attention token dim
 dec_hidden_dim = 64  # predictor MLP hidden dim
 dec_num_hidden = 2    # predictor MLP hidden layer 개수

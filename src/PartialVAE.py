@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from layers import MLP, StochasticMLP
+from src.layers import MLP, StochasticMLP
 
 '''
 전체 구조
@@ -249,7 +249,25 @@ class PartialVAE(nn.Module):
 
         x_hat, (mu, sig) = self.forward(xt, mt, n_samples=1)
 
-        x_fill = mt * xt + (1 - mt) * x_hat
+        Dcon = self.num_con_features
+        Dcat = self.num_cat_features
+        Cmax = self.most_categories
+
+        x_hat_con = x_hat[:, :Dcon]
+
+        logits_cat = x_hat[:, Dcon:Dcon + Dcat * Cmax]
+        logits_cat = logits_cat.view(x_hat.size(0), Dcat, Cmax)
+
+        if stochastic:
+            probs = torch.softmax(logits_cat, dim=-1)
+            cat_sample = torch.distributions.Categorical(probs=probs).sample()
+            x_hat_cat_idx = cat_sample.float()
+        else:
+            x_hat_cat_idx = torch.argmax(logits_cat, dim=-1).float()
+
+        x_hat_mixed = torch.cat([x_hat_con, x_hat_cat_idx], dim=1)
+
+        x_fill = mt * xt + (1.0 - mt) * x_hat_mixed
 
         return x_fill.detach().cpu().numpy()
 

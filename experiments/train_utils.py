@@ -6,9 +6,24 @@ import copy
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, roc_auc_score
 
-from FeatureAcquisition import FeatureAcquisition
+from src.FeatureAcquisition import FeatureAcquisition
+
+
+def set_seed(num=42):
+    random.seed(num)
+    os.environ["PYTHONHASHSEED"] = str(num)
+
+    np.random.seed(num)
+    torch.manual_seed(num)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(num)
+        torch.cuda.manual_seed_all(num)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 # 임의로 masking하는 함수
@@ -19,22 +34,6 @@ def sample_mask_uniform_K_per_sample(bs, d, min_K, max_K): # batch size, feature
         idx = np.random.choice(d, size=K, replace=False)
         m[i, idx] = 1.0
     return m
-
-
-# 시드 고정
-def set_seed(numpy_seed, random_seed, torch_seed_cpu, torch_seed_cuda):
-    random.seed(random_seed)
-    os.environ["PYTHONHASHSEED"] = str(random_seed)
-
-    np.random.seed(numpy_seed)
-    torch.manual_seed(torch_seed_cpu)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(torch_seed_cuda)
-        torch.cuda.manual_seed_all(torch_seed_cuda)
-
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 # predictor trainer
@@ -50,7 +49,8 @@ def train_predictor(
     lr_factor=0.2,
     cooldown=0,
     min_lr=1e-7,
-    scheduler_patience=5
+    scheduler_patience=5,
+    metric="accuracy"
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     predictor.to(device)
@@ -65,7 +65,7 @@ def train_predictor(
         min_lr=min_lr,
     )
 
-    best_acc = 0.0
+    best_score = float("-inf")
     best_state = None
 
     for epoch in range(epochs):
@@ -111,34 +111,44 @@ def train_predictor(
             logits_val = predictor(X_val, mv)
             val_loss = criterion(logits_val, y_val).item()
 
-            preds = logits_val.argmax(dim=-1)
-            acc = (preds == y_val).float().mean().item()
+            if metric == "accuracy":
+                preds = logits_val.argmax(dim=-1)
+                score = (preds == y_val).float().mean().item()
+                metric_name = "val_acc"
+
+            elif metric == "auroc":
+                prob_pos = torch.softmax(logits_val, dim=-1)[:, 1]
+                score = roc_auc_score(
+                    y_val.detach().cpu().numpy(),
+                    prob_pos.detach().cpu().numpy()
+                )
+                metric_name = "val_auroc"
 
         # Scheduler update
-        scheduler.step(acc)
+        scheduler.step(score)
 
         # 로그 출력
         current_lr = optimizer.param_groups[0]["lr"]
         print(
             f"Epoch {epoch+1}/{epochs} | "
             f"train_loss={avg_train_loss:.4f} | "
-            f"val_loss={val_loss:.4f} | val_acc={acc:.4f} | "
+            f"val_loss={val_loss:.4f} | {metric_name}={score:.4f} | "
             f"lr={current_lr:.6f}"
         )
 
         # Best model 저장
-        if acc > best_acc:
-            best_acc = acc
+        if score > best_score:
+            best_score = score
             best_state = copy.deepcopy(predictor.state_dict())
 
     # 모든 epoch 후 best 모델 복원
     if best_state is not None:
         predictor.load_state_dict(best_state)
 
-    print(f"Best validation accuracy = {best_acc:.4f}")
+    print(f"Best validation {metric} = {best_score:.4f}")
 
 
-# Partial VAE trainer
+# VAE trainer
 def train_VAE(
     generator,
     train_loader,
@@ -249,7 +259,7 @@ def train_VAE(
     if best_state is not None:
         generator.load_state_dict(best_state)
 
-    print(f"Best val_loss = {best_val_loss:.4f}")    
+    print(f"Best val_loss = {best_val_loss:.4f}")
 
 
 # Flow trainer
@@ -369,12 +379,15 @@ def run_feature_acquisition(
     D,
     num_samples=10,
     alpha=1.0,
-    gamma=0.5
+    gamma=0.5,
+    metric='acc',
+    num_gamma_samples=1
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     predictor.eval()
 
-    accs = []
+    scores = []
+    y_true = y_test.cpu().numpy() # 정답 y
 
     for t in range(1, D+1):
         FA = FeatureAcquisition(
@@ -395,13 +408,34 @@ def run_feature_acquisition(
             xv = X_test.to(device)
             mv = torch.tensor(m_np, dtype=torch.float32, device=device)
             logits = predictor(xv, mv)
-            y_pred = logits.argmax(dim=-1).cpu().numpy()
 
-        y_true = y_test.cpu().numpy()
+            if metric == "acc":
+                # accuracy
+                y_pred = logits.argmax(dim=-1).cpu().numpy()
+                score_t = accuracy_score(y_true, y_pred)
 
-        acc_t = accuracy_score(y_true, y_pred)
-        accs.append(acc_t)
+            elif metric == "auroc":
+                # AUROC (probability 필요)
+                probs = torch.softmax(logits, dim=-1).cpu().numpy()
 
-        print(f"Step {t}/{D} | Acc: {acc_t:.4f}")
+                if probs.shape[1] == 2:
+                    # binary classification: 양성 클래스 확률만 사용
+                    y_score = probs[:, 1]
+                    score_t = roc_auc_score(y_true, y_score)
+                else:
+                    # multi-class: one-vs-rest 방식
+                    score_t = roc_auc_score(
+                        y_true,
+                        probs,
+                        multi_class="ovr"
+                    )
 
-    return accs
+            scores.append(score_t)
+
+        print(f"Step {t}/{D} | Acc: {score_t:.4f}")
+
+    return scores
+
+
+def to_result_array(result_list):
+    return np.array([np.asarray(accs, dtype=np.float32) for accs in result_list], dtype=np.float32)
